@@ -12,6 +12,7 @@ const regex NEW_PATH("[/][a-zA-Z0-9/:. ]+", regex_constants::ECMAScript);
 const regex OUT_REDIRECT(">[ ]*[a-zA-Z0-9./]+", regex_constants::ECMAScript);
 const regex IN_REDIRECT("<[ ]*[a-zA-Z0-9.]+", regex_constants::ECMAScript);
 const regex FILE_ADDR("[./]*[a-zA-Z0-9./]+", regex_constants::ECMAScript);
+const regex PARALLEL("[a-zA-Z0-9./_ <>:]+&", regex_constants::ECMAScript);
 
 struct command{
     public:
@@ -23,6 +24,7 @@ struct command{
         char* out_file;
         bool parallel;
         bool change_env_var;
+        command* parallel_cmd;
         command(std::string in_str);
         ~command();
         void init_arg_arry();
@@ -53,6 +55,17 @@ command::command(string in_str){
     out_file = new char[0];
     in_file = new char[0];
     char * temp = new char[0];
+    parallel_cmd = nullptr;
+
+    if(regex_search(in_str, match, PARALLEL)){
+        parallel = true;
+        strcpy(temp, match.str().c_str());
+        strncpy(temp, temp, match.str().size()-1);
+        in_str = in_str.substr(match.str().size(), in_str.size());
+        parallel_cmd = new command(in_str);
+        string temp_str(temp);
+        in_str = temp_str.substr(0, temp_str.size()-1);
+    }
 
     //first look if cmd is setting new env var
     if(regex_search(in_str, match, ENV_VAR)){
