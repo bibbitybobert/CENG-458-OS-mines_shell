@@ -10,9 +10,12 @@
 
 using namespace std;
 
+int pipefd[2];
+
 int run_child_cmd(command cmd){
     int status = -1;
     int tmpFd;
+
     //output redirect
     if(strcmp(cmd.out_file, "")){
         tmpFd = open(cmd.out_file, O_WRONLY | O_CREAT | O_TRUNC, 0666);
@@ -20,16 +23,34 @@ int run_child_cmd(command cmd){
             perror("Failed to open output file\n");
             exit(1);
         }
-        if(dup2(tmpFd, 1) != 1){
+        if(dup2(tmpFd, STDOUT_FILENO) != 1){
             perror("Failed to redirect stdout\n");
             exit(1);
         }
         close(tmpFd);
     }
+    else if(cmd.out_pipe){
+        close(pipefd[0]);
+        if(pipefd[1] == -1){
+            perror("failed to open write pipe\n");
+            exit(0);
+        }
+        if(dup2(pipefd[1], STDOUT_FILENO) != 1){
+            perror("Failed to redirect write to pipe\n");
+            exit(1);
+        }
+        close(pipefd[1]);    
+    }
     else{
         tmpFd = dup(STDOUT_FILENO);
         if(tmpFd == -1){
             perror("Failed to duplicate terminal file descriptor\n");
+            exit(1);
+        }
+
+        pipefd[1] = dup(STDOUT_FILENO);;
+        if(pipefd[1] == -1){
+            perror("Failed to duplcate terminal file descriptor to write pipe\n");
             exit(1);
         }
     }
@@ -47,15 +68,32 @@ int run_child_cmd(command cmd){
         }
         close(tmpFd);
     }
+    else if(cmd.in_pipe){
+        close(pipefd[1]);
+        if(pipefd[0] == -1){
+            perror("Failed to open read pipe\n");
+            exit(1);
+        }
+        if(dup2(pipefd[0], STDIN_FILENO) == -1){
+            perror("Failed to redirect stdin to read pipe\n");
+            exit(1);
+        }
+        close(pipefd[0]);
+    }
     else{
         tmpFd = dup(STDIN_FILENO);
         if(tmpFd == -1){
             perror("Failed to duplicate std in\n");
             exit(1);
         }
+
+        pipefd[0] = dup(STDIN_FILENO);
+        if(pipefd[0] == -1){
+            perror("Failed to duplicate std in to read pipe\n");
+            exit(1);
+        }
     }
 
-    
     status = execvp(cmd.cmd, cmd.args);
     perror("execvp failed\n");
     exit(1);
@@ -80,54 +118,35 @@ void run_commands(command cmd){
         status = 0;
     }
     else{
-        if(cmd.parallel){
-            child = fork();
-            if(child == -1){
-                perror("fork failed\n");
-                exit(1);
-            }
-            else if(child == 0){
-                run_commands(*cmd.parallel_cmd);
-                exit(0);
-            }
-            run_child_cmd(cmd);
-            waitpid(child, &status, 0);
-        }
-        else{
-            int pipefd[2];
-            if(pipe(pipefd) == -1){
-                perror("non-Parallel piping error\n");
-                exit(1);
-            }
+        // if(cmd.parallel){
+        //     while(cmd.parallel && cmd.next_cmd != nullptr){
+        //         pid_t P_child = fork();
+        //         if(P_child == -1){
+        //             perror("Parallel fork failed\n");
+        //             exit(1);
+        //         }
+        //         else if(P_child == 0){
+        //             run_commands(cmd);
+        //             exit(0);
+        //         }
+        //         cmd = *cmd.next_cmd;
+        //     }
+
+        //     while(wait(&status) > 0);
+        // }
+        // else{
             child = fork();
             if(child == -1){
                 perror("forking error\n");
                 exit(1);
             }
-            else if(child == 0){ 
-                if(cmd.out_pipe != nullptr){
-                    cout << "piping cmd: " << cmd.cmd << endl;
-                    close(pipefd[0]);
-
-                    dup2(pipefd[1], STDOUT_FILENO);
-                    close(pipefd[1]);
-                }
-                
+            else if (child == 0){
                 status = run_child_cmd(cmd);
             }
             else{
                 waitpid(child, &status, 0);
-                if(cmd.out_pipe != nullptr){
-                    cout << "parent piping cmd: " << (*cmd.out_pipe).cmd << endl;
-                    close(pipefd[1]);
-                    dup2(pipefd[0], STDIN_FILENO);
-                    close(pipefd[0]);
-
-                    status = run_child_cmd(*cmd.out_pipe);
-                }
             }
-        }
-        
+        //}        
     }
     if(status == -1){
         perror("failed some command\n");
@@ -140,13 +159,31 @@ void run_commands(command cmd){
 void runUI(){
     string CL_in = "";
     while(CL_in != "exit"){
+        vector<command> run_parallel;
+        //int pipefd[2];
         cout << "mish> ";
         getline(cin, CL_in);
         smatch match;
         command in_cmd(CL_in);
-        do{ //need to figure out how to make parallel instructions run in parallel
+        bool run = true;
+        while(run){
+            if(in_cmd.out_pipe){
+                if(pipe(pipefd) == -1){
+                    perror("piping error\n");
+                    exit(1);
+                }
+            }
             run_commands(in_cmd);
-        }while(in_cmd.parallel_cmd != nullptr);
+            if(in_cmd.out_pipe){
+                close(pipefd[1]);
+            }
+            if(in_cmd.next_cmd == nullptr){
+                run = false;
+            }
+            else{
+                in_cmd = * in_cmd.next_cmd;
+            }
+        }
     }
         
 }
