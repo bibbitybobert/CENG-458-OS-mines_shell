@@ -12,9 +12,10 @@ using namespace std;
 
 int run_child_cmd(command cmd){
     int status = -1;
+    int tmpFd;
     //output redirect
     if(strcmp(cmd.out_file, "")){
-        int tmpFd = open(cmd.out_file, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        tmpFd = open(cmd.out_file, O_WRONLY | O_CREAT | O_TRUNC, 0666);
         if(tmpFd == -1){
             perror("Failed to open output file\n");
             exit(1);
@@ -26,8 +27,8 @@ int run_child_cmd(command cmd){
         close(tmpFd);
     }
     else{
-        int terminalFD = dup(STDOUT_FILENO);
-        if(terminalFD == -1){
+        tmpFd = dup(STDOUT_FILENO);
+        if(tmpFd == -1){
             perror("Failed to duplicate terminal file descriptor\n");
             exit(1);
         }
@@ -35,7 +36,7 @@ int run_child_cmd(command cmd){
 
     //input redirect
     if(strcmp(cmd.in_file, "")){
-        int tmpFd = open(cmd.in_file, O_RDONLY);
+        tmpFd = open(cmd.in_file, O_RDONLY);
         if(tmpFd == -1){
             perror("Failed to open input file\n");
             exit(1);
@@ -47,8 +48,14 @@ int run_child_cmd(command cmd){
         close(tmpFd);
     }
     else{
-
+        tmpFd = dup(STDIN_FILENO);
+        if(tmpFd == -1){
+            perror("Failed to duplicate std in\n");
+            exit(1);
+        }
     }
+
+    
     status = execvp(cmd.cmd, cmd.args);
     perror("execvp failed\n");
     exit(1);
@@ -80,7 +87,6 @@ void run_commands(command cmd){
                 exit(1);
             }
             else if(child == 0){
-                cout << "run_commands" << endl;
                 run_commands(*cmd.parallel_cmd);
                 exit(0);
             }
@@ -88,12 +94,37 @@ void run_commands(command cmd){
             waitpid(child, &status, 0);
         }
         else{
+            int pipefd[2];
+            if(pipe(pipefd) == -1){
+                perror("non-Parallel piping error\n");
+                exit(1);
+            }
             child = fork();
-            if(child == 0){ 
+            if(child == -1){
+                perror("forking error\n");
+                exit(1);
+            }
+            else if(child == 0){ 
+                if(cmd.out_pipe != nullptr){
+                    cout << "piping cmd: " << cmd.cmd << endl;
+                    close(pipefd[0]);
+
+                    dup2(pipefd[1], STDOUT_FILENO);
+                    close(pipefd[1]);
+                }
+                
                 status = run_child_cmd(cmd);
             }
             else{
                 waitpid(child, &status, 0);
+                if(cmd.out_pipe != nullptr){
+                    cout << "parent piping cmd: " << (*cmd.out_pipe).cmd << endl;
+                    close(pipefd[1]);
+                    dup2(pipefd[0], STDIN_FILENO);
+                    close(pipefd[0]);
+
+                    status = run_child_cmd(*cmd.out_pipe);
+                }
             }
         }
         
