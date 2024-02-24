@@ -16,45 +16,6 @@ int run_child_cmd(command cmd){
     int status = -1;
     int tmpFd;
 
-    //output redirect
-    if(strcmp(cmd.out_file, "")){
-        tmpFd = open(cmd.out_file, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-        if(tmpFd == -1){
-            perror("Failed to open output file\n");
-            exit(1);
-        }
-        if(dup2(tmpFd, STDOUT_FILENO) != 1){
-            perror("Failed to redirect stdout\n");
-            exit(1);
-        }
-        close(tmpFd);
-    }
-    else if(cmd.out_pipe){
-        close(pipefd[0]);
-        if(pipefd[1] == -1){
-            perror("failed to open write pipe\n");
-            exit(0);
-        }
-        if(dup2(pipefd[1], STDOUT_FILENO) != 1){
-            perror("Failed to redirect write to pipe\n");
-            exit(1);
-        }
-        close(pipefd[1]);    
-    }
-    else{
-        tmpFd = dup(STDOUT_FILENO);
-        if(tmpFd == -1){
-            perror("Failed to duplicate terminal file descriptor\n");
-            exit(1);
-        }
-
-        pipefd[1] = dup(STDOUT_FILENO);;
-        if(pipefd[1] == -1){
-            perror("Failed to duplcate terminal file descriptor to write pipe\n");
-            exit(1);
-        }
-    }
-
     //input redirect
     if(strcmp(cmd.in_file, "")){
         tmpFd = open(cmd.in_file, O_RDONLY);
@@ -94,13 +55,52 @@ int run_child_cmd(command cmd){
         }
     }
 
+    //output redirect
+    if(strcmp(cmd.out_file, "")){
+        tmpFd = open(cmd.out_file, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if(tmpFd == -1){
+            perror("Failed to open output file\n");
+            exit(1);
+        }
+        if(dup2(tmpFd, STDOUT_FILENO) != 1){
+            perror("Failed to redirect stdout\n");
+            exit(1);
+        }
+        close(tmpFd);
+    }
+    else if(cmd.out_pipe){
+        close(pipefd[0]);
+        if(pipefd[1] == -1){
+            perror("failed to open write pipe\n");
+            exit(0);
+        }
+        if(dup2(pipefd[1], STDOUT_FILENO) != 1){
+            perror("Failed to redirect write to pipe\n");
+            exit(1);
+        }
+        close(pipefd[1]);    
+    }
+    else{
+        tmpFd = dup(STDOUT_FILENO);
+        if(tmpFd == -1){
+            perror("Failed to duplicate terminal file descriptor\n");
+            exit(1);
+        }
+
+        pipefd[1] = dup(STDOUT_FILENO);;
+        if(pipefd[1] == -1){
+            perror("Failed to duplcate terminal file descriptor to write pipe\n");
+            exit(1);
+        }
+    }
+
     status = execvp(cmd.cmd, cmd.args);
     perror("execvp failed\n");
     exit(1);
     return status;
 }
 
-void run_commands(command cmd){
+vector<pid_t> run_commands(command cmd, vector<pid_t> parallel_pids){
     int status = -1;
     pid_t child;
     if(!strcmp(cmd.cmd, "cd")){
@@ -141,10 +141,18 @@ void run_commands(command cmd){
                 exit(1);
             }
             else if (child == 0){
+                cout << "[RUN]: running child cmd: " << cmd.cmd << endl;
                 status = run_child_cmd(cmd);
+                cout << "[RUN]: done running child cmd: " << cmd.cmd << endl;
             }
             else{
-                waitpid(child, &status, 0);
+                if(cmd.parallel){
+                    parallel_pids.push_back(child);
+                    status = 1;
+                }
+                else{  
+                    waitpid(child, &status, 0);
+                }
             }
         //}        
     }
@@ -152,14 +160,14 @@ void run_commands(command cmd){
         perror("failed some command\n");
         exit(1);
     }
-
+    return parallel_pids;
 }
 
 
 void runUI(){
     string CL_in = "";
     while(CL_in != "exit"){
-        vector<command> run_parallel;
+        vector<pid_t> run_parallel;
         //int pipefd[2];
         cout << "mish> ";
         getline(cin, CL_in);
@@ -173,7 +181,13 @@ void runUI(){
                     exit(1);
                 }
             }
-            run_commands(in_cmd);
+            cout << "[RUN]: running command: " << in_cmd.cmd << endl;
+            cout << "[RUN]: with arguments: " << endl;
+            for(int i =0 ; i < in_cmd.argc + 1; i++){
+                cout << in_cmd.args[i] << endl;
+            }
+            run_parallel = run_commands(in_cmd, run_parallel);
+            cout << "[RUN]: finished running command: " << in_cmd.cmd << endl;
             if(in_cmd.out_pipe){
                 close(pipefd[1]);
             }
@@ -184,12 +198,64 @@ void runUI(){
                 in_cmd = * in_cmd.next_cmd;
             }
         }
+        if(in_cmd.parallel){
+            for(pid_t i : run_parallel){
+                int status;
+                waitpid(i, &status, 0);
+            }
+        }
     }
         
 }
 
 void runScript(char* script_file){
-    cout << "RUNNING SCRIPT: " << script_file << endl;
+    cout << "running script" << endl;
+    fstream inFile;
+    inFile.open(script_file, ios::in);
+    if(!inFile.is_open()){
+        perror("Error loading script file");
+        exit(1);
+    }
+    string CL_in = "";
+    while(getline(inFile, CL_in)){
+        vector<pid_t> run_parallel;
+        //int pipefd[2];
+        cout << "mish> ";
+        smatch match;
+        command in_cmd(CL_in);
+        bool run = true;
+        while(run){
+            if(in_cmd.out_pipe){
+                if(pipe(pipefd) == -1){
+                    perror("piping error\n");
+                    exit(1);
+                }
+            }
+            cout << "[RUN]: running command: " << in_cmd.cmd << endl;
+            cout << "[RUN]: with arguments: " << endl;
+            for(int i =0 ; i < in_cmd.argc + 1; i++){
+                cout << in_cmd.args[i] << endl;
+            }
+            run_parallel = run_commands(in_cmd, run_parallel);
+            cout << "[RUN]: finished running command: " << in_cmd.cmd << endl;
+            if(in_cmd.out_pipe){
+                close(pipefd[1]);
+            }
+            if(in_cmd.next_cmd == nullptr){
+                run = false;
+            }
+            else{
+                in_cmd = * in_cmd.next_cmd;
+            }
+        }
+        if(in_cmd.parallel){
+            for(pid_t i : run_parallel){
+                int status;
+                waitpid(i, &status, 0);
+            }
+        }
+    }
+    inFile.close();
 
 }
 

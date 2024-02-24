@@ -4,16 +4,19 @@
 #include <iostream>
 #include <fcntl.h>
 #include <unistd.h>
+#include <string>
 
 using namespace std;
 
 const regex STRING("[a-zA-Z]+", regex_constants::ECMAScript);
 const regex CD_DIR("[!./a-zA-Z/0-9_-]+", regex_constants::ECMAScript);
-const regex ENV_VAR("[a-zA-Z]+=", regex_constants::ECMAScript);
-const regex NEW_PATH("[/][a-zA-Z0-9/:. ]+", regex_constants::ECMAScript);
-const regex OUT_REDIRECT(">[ ]*[a-zA-Z0-9./]+", regex_constants::ECMAScript);
-const regex IN_REDIRECT("<[ ]*[a-zA-Z0-9.]+", regex_constants::ECMAScript);
-const regex FILE_ADDR("[./]*[a-zA-Z0-9./]+", regex_constants::ECMAScript);
+const regex ENV_VAR("[a-zA-Z_]+=", regex_constants::ECMAScript);
+const regex NEW_PATH("[/][a-zA-Z0-9/:_. ]+", regex_constants::ECMAScript);
+const regex OUT_REDIRECT(">[ ]*[a-zA-Z0-9./_]+", regex_constants::ECMAScript);
+const regex OUT_REDIRECT_ERR(">", regex_constants::ECMAScript);
+const regex IN_REDIRECT("<[ ]*[a-zA-Z0-9._]+", regex_constants::ECMAScript);
+const regex IN_REDIRECT_ERR("<", regex_constants::ECMAScript);
+const regex FILE_ADDR("[./]*[a-zA-Z0-9./_]+", regex_constants::ECMAScript);
 const regex PARALLEL("[a-zA-Z0-9./_ <>:|-]+&", regex_constants::ECMAScript);
 const regex PIPED("[a-zA-Z0-9./_ <>:-]+[|]", regex_constants::ECMAScript);
 
@@ -22,7 +25,7 @@ struct command{
         char* cmd;
         char** args;
         int argc;
-        vector<char*> arg_vec;
+        vector<string> arg_vec;
         char* in_file;
         char* out_file;
         bool parallel;
@@ -65,28 +68,35 @@ command::command(string in_str){
     in_pipe = false;
     out_pipe = false;
     next_cmd = nullptr;
+    arg_vec = {};
     cout << "\n[NEW COMMAND]: in_str: " << in_str << endl;
 
     if(regex_search(in_str, match, PARALLEL)){
         cout << "[PARSING]: found parallel at idx: " << match.position() << endl;
         cout << "[PARSING]: match size: " << match.str().size() << endl;
-        parallel = true;
-        strcpy(temp, match.str().c_str());
-        strncpy(temp, temp, match.str().size()-1);
-        in_str = in_str.substr(match.str().size(), in_str.size());
-        next_cmd = new command(in_str);
-        (*next_cmd).parallel = true;
-        cout << "out of making child command" << endl;
-        string temp_str(temp);
-        in_str = temp_str.substr(0, temp_str.size()-1);
-        cout << "[PARALLEL]: cmd: {" << cmd << "}" << endl;
-        cout << "[PARALLEL]: par_cmd: {" << next_cmd->cmd << "}" << endl; 
+        cout << "[PARSING]: in_str size: " << trim(in_str).size() << endl;
+        if(trim(match.str()).size() == trim(in_str).length()){
+            cout << "[PARSING]: RUN IN BACKGROUND" << endl;
+            in_str.resize(trim(in_str).size() - 1);
+            cout << "new in_str: " << in_str << endl;
+        }
+        else{
+            parallel = true;
+            strncpy(temp, match.str().c_str(), match.str().size()-1);
+            in_str = in_str.substr(match.str().size(), in_str.size());
+            next_cmd = new command(in_str);
+            (*next_cmd).parallel = true;
+            cout << "out of making child command" << endl;
+            string temp_str(temp);
+            in_str = temp_str.substr(0, temp_str.size()-1);
+            cout << "[PARALLEL]: cmd: {" << in_str << "}" << endl;
+            cout << "[PARALLEL]: par_cmd: {" << next_cmd->cmd << "}" << endl; 
+        }
     }
 
     if(regex_search(in_str, match, PIPED)){
         cout << "[PARSING]: found Piped" << endl;
-        strcpy(temp, match.str().c_str());
-        strncpy(temp, temp, match.str().size()-1);
+        strncpy(temp, match.str().c_str(), match.str().size()-1);
         in_str = trim(in_str.substr(match.str().size(), in_str.size()));
         next_cmd = new command(in_str);
         out_pipe = true;
@@ -94,7 +104,7 @@ command::command(string in_str){
         cout << "here" << endl;
         string temp_str(temp);
         in_str = temp_str.substr(0, temp_str.size()-1);
-        cout << "[PIPED]: cmd: {" << cmd << "}" << endl;
+        cout << "[PIPED]: cmd: {" << in_str << "}" << endl;
         cout << "[PIPED]: pipe_cmd: {" << next_cmd->cmd << "}" << endl; 
     }
 
@@ -126,23 +136,31 @@ command::command(string in_str){
             in_str = "";
         }
         if(regex_search(in_str, match, OUT_REDIRECT)){
-            //cout << "[OUT REDIRECT]: out redirect found" << endl;
+            cout << "[OUT REDIRECT]: out redirect found: " << match.str() << endl;
             in_str.replace(match.position(), match.str().size(), "");
             string old_match = match.str();
             regex_search(old_match, match, FILE_ADDR);
             strcpy(out_file, match.str().c_str());
-            //cout << "[OUT REDIRECT]: redirect out to: " << out_file << endl;
+            cout << "[OUT REDIRECT]: redirect out to: " << out_file << endl;
+        }
+        else if(regex_search(in_str, match, OUT_REDIRECT_ERR)){
+            perror("please provide output file");
+            exit(1);
         }
         else{
             strcpy(out_file, "");
         }
         if(regex_search(in_str, match, IN_REDIRECT)){
-            //cout << "[IN REDIRECT]: in redirect found" << endl; 
+            cout << "[IN REDIRECT]: in redirect found" << endl; 
             in_str.replace(match.position(), match.str().size(), "");
             string old_match = match.str();
             regex_search(old_match, match, FILE_ADDR);
             strcpy(in_file, match.str().c_str());
-            //cout << "[IN REDIRECT]: redirect in to: " << in_file << endl;
+            cout << "[IN REDIRECT]: redirect in to: " << in_file << endl;
+        }
+        else if(regex_search(in_str, match, IN_REDIRECT_ERR)){
+            perror("please provide input file");
+            exit(1);
         }
         else{
             strcpy(in_file, "");
@@ -150,11 +168,19 @@ command::command(string in_str){
 
 
         while(regex_search(in_str, match, CD_DIR)){
-            cout << "[PARSING]: arguments found: " << match.str() << endl;
             strcpy(temp, match.str().c_str());
+            cout << "[PARSING]: arguments found: " << temp << endl;
             arg_vec.push_back(temp);
+            cout << "arg_vec size: " << arg_vec.size() << endl;
+            cout << "arg_vec.back(): " << arg_vec.back() << endl;
             in_str.erase(match.position(), match.str().size());
             cout << "[ARGUMENTS]: " << temp << endl;
+            cout << "[ARGUMENTS]: in_str after removing temp: " << in_str << endl;
+            cout << "arg_vec.back(): " << arg_vec.back() << endl;
+        }
+        cout << "[ARGUMENTS]: arg_vec: " << endl;
+        for(int i = 0; i < int(arg_vec.size()); i++){
+            cout << "   " <<  arg_vec[i] << endl;
         }
         in_str = "";
     }
@@ -168,9 +194,13 @@ command::~command(){
 void command::init_arg_arry(){
     args = new char*[arg_vec.size() + 2];
     args[0] = cmd;
-    int i = 1;
-    for(i = 0; i < int(arg_vec.size()); i++){
-        args[i + 1] = arg_vec.at(i);
+    cout << "args[0]: " << cmd << endl;
+    int i = 0;
+    for(i = 0; i < int(arg_vec.size()); ++i){
+        cout << "arg_vec.at(" << i << "): " << arg_vec.at(i) << endl;
+        args[i+1] = new char[arg_vec[i].size()];
+        strcpy(args[i+1], arg_vec[i].c_str());
+        cout << "args[" << i+1 << "]: " << args[i+1] << endl;
     }
     args[i + 1] = NULL;
     argc = i;
